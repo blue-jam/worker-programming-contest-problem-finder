@@ -43,3 +43,16 @@ def test_codechef_parse_solved_problems():
     solved = scraper._parse_solved_problems(soup)
     assert "FLOW001" in solved
     assert "TEST" in solved
+
+
+def test_kattis_fetch_problem_solvers():
+    scraper = KattisScraper()
+    # Mocking session response
+    class MockResponse:
+        status_code = 200
+        text = '<html><body><a href="/users/tourist">tourist</a><a href="/users/steve-allen">steve-allen</a></body></html>'
+    scraper.session.get = lambda url, **kwargs: MockResponse()
+    solvers = scraper.fetch_problem_solvers("bijele")
+    assert "tourist" in solvers
+    assert "steve-allen" in solvers
+

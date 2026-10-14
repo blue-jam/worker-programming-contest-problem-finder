@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Input files (参加者・問題リスト)
+participants.md
+participants.txt
+problem.json
+problems.json
+
+# Output deliverables (実行成果物)
+report.md
+result.json
+

@@ -1,6 +1,7 @@
 """CodeChef platform scraper module.
 
 Handles fetching user profile, solved problems from static HTML and recent submissions API.
+Includes automatic exponential backoff retry for HTTP 429 (Too Many Requests).
 """
 
 from dataclasses import dataclass, field
@@ -29,16 +30,17 @@ class CodeChefScraper:
 
     def __init__(
         self,
-        base_delay: float = 1.0,
-        max_jitter: float = 0.8,
+        base_delay: float = 1.5,
+        max_jitter: float = 1.0,
         session: Optional[requests.Session] = None,
         timeout: int = 15,
         user_agent: Optional[str] = None,
-        use_headless: bool = False,
+        max_retries: int = 3,
     ):
         self.base_delay = base_delay
         self.max_jitter = max_jitter
         self.timeout = timeout
+        self.max_retries = max_retries
         self.session = session or requests.Session()
         self.user_agent = user_agent or (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -49,14 +51,37 @@ class CodeChefScraper:
             "User-Agent": self.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
+            "Referer": "https://www.codechef.com/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
         })
-        self.use_headless = use_headless
         self._user_cache: Dict[str, CodeChefUserResult] = {}
 
-    def _sleep_with_jitter(self):
+    def _sleep_with_jitter(self, multiplier: float = 1.0):
         """Sleep to respect rate limits and prevent bans."""
-        duration = self.base_delay + random.uniform(0.1, self.max_jitter)
+        duration = (self.base_delay * multiplier) + random.uniform(0.2, self.max_jitter)
         time.sleep(duration)
+
+    def _request_with_retry(self, url: str) -> Optional[requests.Response]:
+        """Execute GET request with exponential backoff on 429 Too Many Requests."""
+        for attempt in range(self.max_retries + 1):
+            self._sleep_with_jitter(multiplier=1.0 + (attempt * 1.5))
+            try:
+                resp = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+                if resp.status_code == 429:
+                    backoff = (attempt + 1) * 4.0 + random.uniform(1.0, 3.0)
+                    logger.warning(
+                        f"[CodeChef] Rate limited (429) for {url}. "
+                        f"Backing off for {backoff:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})..."
+                    )
+                    time.sleep(backoff)
+                    continue
+                return resp
+            except requests.RequestException as e:
+                if attempt == self.max_retries:
+                    raise e
+                time.sleep(2.0)
+        return None
 
     def fetch_user(self, username: str) -> CodeChefUserResult:
         """Fetch user profile and extract solved problems from CodeChef."""
@@ -67,15 +92,24 @@ class CodeChefScraper:
         url = f"{self.BASE_URL}/users/{username.strip()}"
         logger.debug(f"[CodeChef] Fetching user: {username} ({url})")
 
-        self._sleep_with_jitter()
         try:
-            resp = self.session.get(url, timeout=self.timeout, allow_redirects=True)
-            if resp.status_code == 404:
+            resp = self._request_with_retry(url)
+            if resp is None or resp.status_code == 404:
                 result = CodeChefUserResult(
                     username=username,
                     exists=False,
                     profile_url=url,
                     error_message="User not found (404)",
+                )
+                self._user_cache[lower_user] = result
+                return result
+
+            if resp.status_code == 429:
+                result = CodeChefUserResult(
+                    username=username,
+                    exists=False,
+                    profile_url=url,
+                    error_message="Rate limited (429)",
                 )
                 self._user_cache[lower_user] = result
                 return result
@@ -98,7 +132,6 @@ class CodeChefScraper:
             solved = self._parse_solved_problems(soup)
 
             # 2. Also check recent submission activity API for accurate Problem Codes
-            # This fetches verified AC problem codes (e.g., TEST, FLOW001, MAXHAMDIST)
             recent_solved = self._fetch_recent_ac_submissions(username)
             solved.update(recent_solved)
 
@@ -129,7 +162,6 @@ class CodeChefScraper:
         # Find problems-solved section (or sections containing "fully solved" or "problems solved")
         sections = soup.find_all("section", class_=re.compile(r"problems-solved", re.I))
         if not sections:
-            # Fallback to any container with relevant header
             for header in soup.find_all(["h3", "h4", "h5"]):
                 if re.search(r"(fully solved|problems solved)", header.get_text(), re.I):
                     parent = header.find_parent("section") or header.find_parent("div")
@@ -137,10 +169,8 @@ class CodeChefScraper:
                         sections.append(parent)
 
         for sec in sections:
-            # Look for <a> tags pointing to problems or status
             for a in sec.find_all("a", href=True):
                 href = a["href"]
-                # Patterns: /problems/FLOW001 or /status/FLOW001,username or /START123/problems/FLOW001
                 m = re.search(r"/(?:[A-Z0-9_]+/)?problems/([a-zA-Z0-9_\.\-]+)", href)
                 if m:
                     solved.add(m.group(1).upper())
@@ -148,17 +178,13 @@ class CodeChefScraper:
                 if m_status:
                     solved.add(m_status.group(1).upper())
 
-            # Also check text/spans inside <p> or <article> under contest/practice headers
-            # CodeChef lists problem titles and codes inside <span> tags
+            # Text/spans inside section
             for span in sec.find_all("span"):
                 txt = span.get_text().strip()
-                # Split comma-separated lists
                 parts = [p.strip() for p in re.split(r"[,;]+", txt) if p.strip()]
                 for part in parts:
-                    # If looks like a problem code (alphanumeric, e.g. TEST, FLOW001)
                     if re.match(r"^[A-Z0-9_\.\-]{2,20}$", part, re.I):
                         solved.add(part.upper())
-                    # Also store exact text uppercase for title/name matches
                     solved.add(part.upper())
 
         return solved
@@ -169,9 +195,8 @@ class CodeChefScraper:
         for page in range(max_pages):
             api_url = f"{self.BASE_URL}/recent/user?page={page}&user_handle={username.strip()}"
             try:
-                self._sleep_with_jitter()
-                resp = self.session.get(api_url, timeout=self.timeout)
-                if resp.status_code != 200:
+                resp = self._request_with_retry(api_url)
+                if resp is None or resp.status_code != 200:
                     break
                 data = resp.json()
                 html_content = data.get("content", "")
@@ -184,13 +209,12 @@ class CodeChefScraper:
                     break
 
                 rows = table.find_all("tr")
-                for tr in rows[1:]:  # Skip header
+                for tr in rows[1:]:
                     cells = tr.find_all(["td", "th"])
                     if len(cells) >= 3:
                         prob_cell = cells[1]
                         result_cell = cells[2]
                         result_text = result_cell.get_text().strip()
-                        # Check if result is AC (100 pts or tick mark)
                         is_ac = (
                             "(100)" in result_text
                             or "tick" in str(result_cell).lower()
@@ -208,7 +232,6 @@ class CodeChefScraper:
                             if code:
                                 solved.add(code.upper())
 
-                # If no more pages
                 if data.get("max_page", 0) <= page + 1:
                     break
             except Exception as e:

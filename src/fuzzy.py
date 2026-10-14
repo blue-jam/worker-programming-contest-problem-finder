@@ -108,16 +108,7 @@ def generate_candidate_ids(
 
     lower = cleaned.lower()
 
-    # 2. Symbols addition and removal (_, -, .)
-    for p in ["_", "-", "."]:
-        add_candidate(f"{p}{lower}", is_exact=False, match_type="symbol_prefix")
-        add_candidate(f"{lower}{p}", is_exact=False, match_type="symbol_suffix")
-        add_candidate(f"{p}{lower}{p}", is_exact=False, match_type="symbol_affix")
-
-    # If already contains symbols, try stripped version or swap _ and -
-    stripped = re.sub(r"^[_.\-]+|[_.\-]+$", "", lower)
-    if stripped and stripped != lower:
-        add_candidate(stripped, is_exact=False, match_type="symbol_stripped")
+    # 2. High-priority Symbol Variations: Swap _ and - (very common across platforms like Kattis vs AtCoder)
     if "_" in lower:
         add_candidate(lower.replace("_", "-"), is_exact=False, match_type="symbol_swap")
         add_candidate(lower.replace("_", ""), is_exact=False, match_type="symbol_removed")
@@ -125,12 +116,12 @@ def generate_candidate_ids(
         add_candidate(lower.replace("-", "_"), is_exact=False, match_type="symbol_swap")
         add_candidate(lower.replace("-", ""), is_exact=False, match_type="symbol_removed")
 
-    # Common CP/Dev tags
-    for tag in ["dev", "cp", "code", "algo", "pro"]:
-        add_candidate(f"{lower}_{tag}", is_exact=False, match_type=f"suffix_{tag}")
-        add_candidate(f"{lower}-{tag}", is_exact=False, match_type=f"suffix_{tag}")
+    # Stripped symbols
+    stripped = re.sub(r"^[_.\-]+|[_.\-]+$", "", lower)
+    if stripped and stripped != lower:
+        add_candidate(stripped, is_exact=False, match_type="symbol_stripped")
 
-    # 3. Numeric modifications
+    # 3. Numeric modifications (common variations)
     # If ends with digits, try removing them
     m = re.search(r"^(.*?)(\d+)$", lower)
     if m:
@@ -143,9 +134,24 @@ def generate_candidate_ids(
                     add_candidate(f"{base}{val + diff}", is_exact=False, match_type="number_shifted")
     else:
         # Add small digits commonly appended
-        for digit in ["0", "1", "2", "99"]:
+        for digit in ["1", "0", "2"]:
             add_candidate(f"{lower}{digit}", is_exact=False, match_type="number_appended")
             add_candidate(f"{lower}_{digit}", is_exact=False, match_type="number_appended")
+
+    # 4. Common CP/Dev tags and Handle prefixes
+    for tag in ["dev", "cp"]:
+        add_candidate(f"{lower}_{tag}", is_exact=False, match_type=f"suffix_{tag}")
+        add_candidate(f"{lower}-{tag}", is_exact=False, match_type=f"suffix_{tag}")
+
+    for pref in ["one", "real", "the"]:
+        add_candidate(f"{pref}_{lower}", is_exact=False, match_type=f"prefix_{pref}")
+        add_candidate(f"{pref}-{lower}", is_exact=False, match_type=f"prefix_{pref}")
+
+    # 5. Affix symbols (_, -, .)
+    for p in ["_", "-", "."]:
+        add_candidate(f"{p}{lower}", is_exact=False, match_type="symbol_prefix")
+        add_candidate(f"{lower}{p}", is_exact=False, match_type="symbol_suffix")
+
 
     # 4. Levenshtein variations (distance 1~2: single deletion, double letter, transposition)
     if include_levenshtein and len(lower) >= 3:
@@ -171,9 +177,20 @@ def generate_candidate_ids(
         if len(no_vowels) >= 3:
             add_candidate(lower[0] + no_vowels, is_exact=False, match_type="vowels_dropped")
 
-    # Sort results: exact first, then by similarity descending
+    # Sort results: exact first, then by priority tier, then similarity descending
+    def get_tier(match_type: str) -> int:
+        if match_type.startswith("exact"):
+            return 5
+        if match_type in ("symbol_swap", "symbol_stripped"):
+            return 4
+        if match_type in ("number_removed", "number_shifted", "number_appended"):
+            return 3
+        if match_type in ("symbol_prefix", "symbol_suffix"):
+            return 2
+        return 1
+
     res = list(candidates.values())
-    res.sort(key=lambda c: (1 if c.is_exact else 0, c.similarity), reverse=True)
+    res.sort(key=lambda c: (get_tier(c.match_type), c.similarity), reverse=True)
 
     if max_candidates and len(res) > max_candidates:
         # Always keep all exact matches + top candidates

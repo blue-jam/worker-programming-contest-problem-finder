@@ -1,6 +1,0 @@
-# 企業プログラミングコンテスト 参加者リスト（AtCoder ID）
-tourist
-chokudai
-deepak
-steve_allen
-test_fresh_participant_2026

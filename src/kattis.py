@@ -54,10 +54,28 @@ class KattisScraper:
         self._user_cache: Dict[str, KattisUserResult] = {}
         self._problem_solvers_cache: Dict[str, Set[str]] = {}
 
-    def _sleep_with_jitter(self):
+    def _sleep_with_jitter(self, multiplier: float = 1.0):
         """Sleep to respect rate limits and prevent bans."""
-        duration = self.base_delay + random.uniform(0.1, self.max_jitter)
+        duration = (self.base_delay * multiplier) + random.uniform(0.1, self.max_jitter)
         time.sleep(duration)
+
+    def _request_with_retry(self, url: str) -> Optional[requests.Response]:
+        """Execute GET request with exponential backoff on 429."""
+        for attempt in range(3):
+            self._sleep_with_jitter(multiplier=1.0 + (attempt * 1.5))
+            try:
+                resp = self.session.get(url, timeout=self.timeout)
+                if resp.status_code == 429:
+                    backoff = (attempt + 1) * 3.0 + random.uniform(1.0, 2.0)
+                    logger.warning(f"[Kattis] Rate limited (429) for {url}. Waiting {backoff:.1f}s...")
+                    time.sleep(backoff)
+                    continue
+                return resp
+            except requests.RequestException as e:
+                if attempt == 2:
+                    raise e
+                time.sleep(2.0)
+        return None
 
     def fetch_user(self, username: str) -> KattisUserResult:
         """Fetch user profile and extract solved problems from Kattis."""
@@ -68,10 +86,9 @@ class KattisScraper:
         url = f"{self.BASE_URL}/users/{username.strip()}"
         logger.debug(f"[Kattis] Fetching user: {username} ({url})")
 
-        self._sleep_with_jitter()
         try:
-            resp = self.session.get(url, timeout=self.timeout)
-            if resp.status_code == 404:
+            resp = self._request_with_retry(url)
+            if resp is None or resp.status_code == 404:
                 result = KattisUserResult(
                     username=username,
                     exists=False,
@@ -151,18 +168,17 @@ class KattisScraper:
         url = f"{self.BASE_URL}/problems/{prob}/statistics"
         logger.debug(f"[Kattis] Fetching problem statistics: {prob} ({url})")
 
-        self._sleep_with_jitter()
         solvers: Set[str] = set()
         try:
-            resp = self.session.get(url, timeout=self.timeout)
-            if resp.status_code == 200:
+            resp = self._request_with_retry(url)
+            if resp is not None and resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for a in soup.find_all("a", href=True):
                     href = a["href"]
                     m = re.match(r"^/users/([a-zA-Z0-9_\.\-]+)/?$", href)
                     if m:
                         solvers.add(m.group(1).lower())
-            else:
+            elif resp is not None:
                 logger.debug(f"[Kattis] Statistics page for {prob} returned {resp.status_code}")
         except requests.RequestException as e:
             logger.warning(f"[Kattis] Error fetching problem solvers for {prob}: {e}")
