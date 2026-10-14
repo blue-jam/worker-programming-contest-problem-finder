@@ -27,3 +27,19 @@ def test_strip_numbers():
     candidates = generate_candidate_ids("user123")
     names = {c.username for c in candidates}
     assert "user" in names
+
+
+def test_generate_candidate_ids_exact_only():
+    candidates = generate_candidate_ids("chokudai", exact_only=True)
+    assert len(candidates) == 1
+    assert candidates[0].username == "chokudai"
+    assert candidates[0].original_id == "chokudai"
+    assert candidates[0].is_exact is True
+    assert candidates[0].match_type == "exact"
+    assert candidates[0].similarity == 1.0
+
+
+def test_generate_candidate_ids_max_candidates():
+    candidates = generate_candidate_ids("chokudai", max_candidates=1)
+    assert len(candidates) == 1
+    assert candidates[0].is_exact is True

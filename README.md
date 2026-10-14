@@ -66,8 +66,12 @@ uv sync
 # 基本実行: 各難易度Tierから1問ずつ（計5問）全員未ACの問題を自動選定
 uv run python check_conflicts.py --auto
 
+# 【推奨・レート制限対策】参加者と同一ユーザー名（完全一致）のみを高速突合する場合
+# （類似ID派生を無効化し、参加者数分のみのリクエストに抑えるため429 Rate Limitを確実に防止できます）
+uv run python check_conflicts.py --auto --exact-only
+
 # 各Tierから2問ずつ（計10問）選定し、Kattisの補充も許可する場合
-uv run python check_conflicts.py --auto --count-per-tier 2 --include-kattis
+uv run python check_conflicts.py --auto --exact-only --count-per-tier 2 --include-kattis
 ```
 
 選定された安全な問題セットは自動的に `problems.json` に保存され、`report.md` に難易度別のマトリクスが出力されます。
@@ -143,6 +147,7 @@ uv run python check_conflicts.py --problems problems.json
 | `--output-json` | `result.json` | 結果JSONの出力先 |
 | `--output-report` | `report.md` | レポートMarkdownの出力先 |
 | `--skip-kattis-solvers-check` | `False` | Kattis問題統計ページによるソルバー逆引きチェックをスキップ |
+| `-e`, `--exact-only`, `--exact` | `False` | 同一ユーザー名（完全一致）のみをチェック。類似ID派生を無効化し429レート制限を回避 |
 | `-v`, `--verbose` | `False` | 詳細なデバッグログを表示 |
 
 ---

@@ -100,22 +100,28 @@ class CodeChefScraper:
 
         try:
             resp = self._request_with_retry(url)
-            if resp is None or resp.status_code == 404:
+            if resp is None:
+                return CodeChefUserResult(
+                    username=username,
+                    exists=False,
+                    profile_url=url,
+                    error_message="Request failed or rate limit exceeded",
+                )
+
+            if resp.status_code == 429:
+                return CodeChefUserResult(
+                    username=username,
+                    exists=False,
+                    profile_url=url,
+                    error_message="Rate limited (429)",
+                )
+
+            if resp.status_code == 404:
                 result = CodeChefUserResult(
                     username=username,
                     exists=False,
                     profile_url=url,
                     error_message="User not found (404)",
-                )
-                self._user_cache[lower_user] = result
-                return result
-
-            if resp.status_code == 429:
-                result = CodeChefUserResult(
-                    username=username,
-                    exists=False,
-                    profile_url=url,
-                    error_message="Rate limited (429)",
                 )
                 self._user_cache[lower_user] = result
                 return result

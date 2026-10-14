@@ -53,6 +53,7 @@ def generate_candidate_ids(
     original_id: str,
     include_levenshtein: bool = True,
     max_candidates: int = 50,
+    exact_only: bool = False,
 ) -> List[CandidateUser]:
     """Generate candidate usernames across platforms based on original AtCoder ID.
 
@@ -62,10 +63,23 @@ def generate_candidate_ids(
     - Common developer/CP suffixes (_dev, -dev, _cp, -cp)
     - Numeric modifications (append 0/1/2, strip trailing digits)
     - Levenshtein distance 1~2 typos and common keyboard slips
+
+    If exact_only is True, returns only the exact original ID.
     """
     cleaned = original_id.strip()
     if not cleaned:
         return []
+
+    if exact_only:
+        return [
+            CandidateUser(
+                username=cleaned,
+                original_id=cleaned,
+                is_exact=True,
+                match_type="exact",
+                similarity=1.0,
+            )
+        ]
 
     candidates: Dict[str, CandidateUser] = {}
 
@@ -193,9 +207,10 @@ def generate_candidate_ids(
     res.sort(key=lambda c: (get_tier(c.match_type), c.similarity), reverse=True)
 
     if max_candidates and len(res) > max_candidates:
-        # Always keep all exact matches + top candidates
+        # Always keep exact matches up to max_candidates + top candidates
         exacts = [c for c in res if c.is_exact]
         fuzzies = [c for c in res if not c.is_exact]
-        res = exacts + fuzzies[: max_candidates - len(exacts)]
+        remaining = max(0, max_candidates - len(exacts))
+        res = exacts[:max_candidates] if remaining == 0 else exacts + fuzzies[:remaining]
 
     return res

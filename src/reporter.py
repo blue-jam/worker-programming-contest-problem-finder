@@ -23,6 +23,7 @@ class Reporter:
         results: List[ProblemConflictResult],
         total_participants: int,
         total_candidates: int,
+        exact_only: bool = False,
     ):
         """Print rich colored summary table to terminal."""
         has_tiers = any(r.tier is not None for r in results)
@@ -86,9 +87,10 @@ class Reporter:
         self.console.print(table)
         self.console.print()
 
+        mode_str = "Exact IDs Only" if exact_only else "Fuzzy Variations"
         summary_text = (
             f"[bold]Participants:[/bold] {total_participants} | "
-            f"[bold]Fuzzy Accounts Checked:[/bold] {total_candidates} | "
+            f"[bold]Accounts Checked:[/bold] {total_candidates} ({mode_str}) | "
             f"[bold green]Safe Problems:[/bold green] {safe_cnt} | "
             f"[bold yellow]Suspicious Problems:[/bold yellow] {suspicious_cnt} | "
             f"[bold red]Collision Problems:[/bold red] {collision_cnt}"
@@ -147,6 +149,7 @@ class Reporter:
         results: List[ProblemConflictResult],
         participants: List[str],
         total_candidates: int,
+        exact_only: bool = False,
     ):
         """Generate high quality, clear report.md."""
         safe_cnt = sum(1 for r in results if r.status == RiskStatus.SAFE)
@@ -155,19 +158,20 @@ class Reporter:
         has_tiers = any(r.tier is not None for r in results)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scope_str = "同一ユーザー名のみ（完全一致）" if exact_only else f"類似ID探索（最大 {total_candidates} アカウント）"
 
         md_lines = [
             "# 企業プログラミングコンテスト 候補問題 既AC・競合調査レポート",
             "",
             f"**調査日時**: {now_str}  ",
-            f"**対象参加者数**: {len(participants)} 名（Fuzzy ID 探索候補: {total_candidates} アカウント）  ",
+            f"**対象参加者数**: {len(participants)} 名（探索スコープ: {scope_str}）  ",
             f"**調査対象候補問題数**: {len(results)} 問  ",
             "",
             "## 1. 総合サマリー",
             "",
             "| 判定ステータス | 問題数 | 説明 |",
             "| :--- | :---: | :--- |",
-            f"| 🟢 **SAFE** | {safe_cnt} | 参加者および類似IDによるAC履歴なし（選定推奨） |",
+            f"| 🟢 **SAFE** | {safe_cnt} | 参加者によるAC履歴なし（選定推奨） |",
             f"| 🟡 **SUSPICIOUS** | {suspicious_cnt} | 類似IDまたは関連アカウントによるAC履歴あり（要確認） |",
             f"| 🔴 **COLLISION** | {collision_cnt} | 参加者本人（完全一致ID）によるAC履歴あり（選定非推奨・衝突） |",
             "",

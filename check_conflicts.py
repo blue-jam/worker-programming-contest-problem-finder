@@ -109,6 +109,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Skip checking Kattis problem statistics page for solvers list.",
     )
     parser.add_argument(
+        "-e", "--exact-only", "--exact",
+        action="store_true",
+        dest="exact_only",
+        help="Only check exact participant usernames without fuzzy variations (avoids 429 rate limits and speeds up search).",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose debug logging.",
@@ -170,15 +176,24 @@ def main():
     else:
         console.print("[bold yellow]Mode:[/bold yellow] Manual Problem Evaluation (checking problems.json)")
 
+    if args.exact_only:
+        console.print("[bold cyan]Search Scope:[/bold cyan] Exact Usernames Only [green](Rate-limit safe: fuzzy variations disabled)[/green]")
+    else:
+        console.print(f"[bold cyan]Search Scope:[/bold cyan] Fuzzy Candidate Variations (up to {args.max_candidates} per participant)")
+
     # 1. Load participants
     participants = load_participants(args.participants)
     console.print(f"[bold green]Participants ({len(participants)}):[/bold green] {', '.join(participants)}")
 
-    # 2. Generate Fuzzy Candidate User IDs
+    # 2. Generate Candidate User IDs
     all_candidates: List[CandidateUser] = []
     candidate_set_per_original: Dict[str, List[CandidateUser]] = {}
     for p in participants:
-        cands = generate_candidate_ids(p, max_candidates=args.max_candidates)
+        cands = generate_candidate_ids(
+            p,
+            max_candidates=args.max_candidates,
+            exact_only=args.exact_only,
+        )
         candidate_set_per_original[p] = cands
         all_candidates.extend(cands)
 
@@ -190,10 +205,16 @@ def main():
             unique_candidates[u_lower] = c
 
     distinct_candidates = list(unique_candidates.values())
-    console.print(
-        f"Generated [bold yellow]{len(distinct_candidates)}[/bold yellow] unique candidate usernames "
-        f"across {len(participants)} participants."
-    )
+    if args.exact_only:
+        console.print(
+            f"Checking [bold green]{len(distinct_candidates)}[/bold green] exact participant username(s) "
+            f"across {len(participants)} participant(s)."
+        )
+    else:
+        console.print(
+            f"Generated [bold yellow]{len(distinct_candidates)}[/bold yellow] unique candidate usernames "
+            f"across {len(participants)} participants."
+        )
     console.print()
 
     # Initialize scrapers
@@ -347,6 +368,7 @@ def main():
         results=all_results,
         total_participants=len(participants),
         total_candidates=len(distinct_candidates),
+        exact_only=args.exact_only,
     )
 
     reporter.write_json(
@@ -355,6 +377,7 @@ def main():
         metadata={
             "participants": participants,
             "total_candidates": len(distinct_candidates),
+            "exact_only": args.exact_only,
             "mode": "auto" if args.auto else "manual",
             "tier_count": args.count_per_tier if args.auto else None,
         },
@@ -366,6 +389,7 @@ def main():
         results=all_results,
         participants=participants,
         total_candidates=len(distinct_candidates),
+        exact_only=args.exact_only,
     )
     console.print(f"[bold green]Saved Markdown report to:[/bold green] {args.output_report}")
     console.print()
