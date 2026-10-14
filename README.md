@@ -54,11 +54,37 @@ uv sync
 
 ---
 
+---
+
 ## 🚀 使い方
 
-### 1. 入力ファイルの準備
+### モードA: 自動問題選定モード（推奨 🌟）
 
-#### A. 参加者リスト (`participants.txt`)
+問題を自分で探す必要はありません！**AtCoder 茶色〜赤色の実力差のあるチーム戦**を想定し、簡単な問題から難しい問題まで5段階の難易度（Tier 1〜Tier 5）でCodeChefから自動取得し、参加者が誰もACしていない `SAFE` な問題を自動探索・選定します（問題プールが不足した場合はKattisからも自動補充可能）。
+
+```bash
+# 基本実行: 各難易度Tierから1問ずつ（計5問）全員未ACの問題を自動選定
+uv run python check_conflicts.py --auto
+
+# 各Tierから2問ずつ（計10問）選定し、Kattisの補充も許可する場合
+uv run python check_conflicts.py --auto --count-per-tier 2 --include-kattis
+```
+
+選定された安全な問題セットは自動的に `problems.json` に保存され、`report.md` に難易度別のマトリクスが出力されます。
+
+#### 💡 問題候補だけを素早く自動生成したい場合
+衝突チェックを行わず、まずバランスの取れた候補問題セットを生成したい場合は `find_problems.py` を使用できます：
+```bash
+uv run python find_problems.py --count-per-tier 1 -o problems.json
+```
+
+---
+
+### モードB: 手動問題リスト指定モード（従来仕様）
+
+#### 1. 入力ファイルの準備
+
+##### A. 参加者リスト (`participants.txt`)
 1行に1つの AtCoder ID を記載します（`#` で始まる行はコメント）。
 ```text
 tourist
@@ -66,46 +92,52 @@ chokudai
 steve_allen
 ```
 
-#### B. 候補問題リスト (`problems.json`)
+##### B. 候補問題リスト (`problems.json`)
 Kattis の Problem ID、および CodeChef の Problem Code を JSON で定義します。
 ```json
 {
-  "kattis": [
-    "bijele",
-    "quadrant",
-    "cold",
-    "secret_prob_999"
-  ],
   "codechef": [
     "FLOW001",
     "TEST",
-    "MAXHAMDIST",
-    "FLOW999_SAFE"
+    "MAXHAMDIST"
+  ],
+  "kattis": [
+    "bijele",
+    "quadrant"
   ]
 }
 ```
 
-### 2. スクリプトの実行
+#### 2. スクリプトの実行
 ```bash
 # 基本実行（uv を使用）
-uv run python check_conflicts.py
-
-# オプション指定の例
-uv run python check_conflicts.py \
-  --participants participants.txt \
-  --problems problems.json \
-  --delay 1.0 \
-  --max-candidates 15 \
-  --output-json result.json \
-  --output-report report.md
+uv run python check_conflicts.py --problems problems.json
 ```
 
-### 3. 主なコマンドラインオプション
+---
+
+### 3. 難易度バケット定義（AtCoder 茶色 〜 赤色）
+
+| 階層 (Tier) | 想定レベル (AtCoder) | CodeChef レーティング | Kattis 難易度 | 特徴・用途 |
+| :--- | :--- | :---: | :---: | :--- |
+| **Tier 1 (Easy)** | 茶色 (400 - 799) 相当 | 1000 - 1399 | 1.8 - 2.8 | 基本実装・全探索・初級アルゴリズム |
+| **Tier 2 (Medium-Low)** | 緑色 (800 - 1199) 相当 | 1400 - 1699 | 2.9 - 4.2 | 基礎DP、グラフ探索(BFS/DFS)、素数・数論 |
+| **Tier 3 (Medium)** | 水色 (1200 - 1599) 相当 | 1700 - 2099 | 4.3 - 5.6 | セグ木等のデータ構造、二分探索、最短経路 |
+| **Tier 4 (Hard)** | 青・黄色 (1600 - 2399) 相当 | 2100 - 2499 | 5.7 - 7.0 | 発展的DP、ゲーム木、フロー、確率・期待値 |
+| **Tier 5 (Very Hard)** | 橙・赤色 (2400 - 2800+) 相当 | 2500 - 3200+ | 7.1 - 9.0 | 難問・高度アルゴリズム（チームのエース枠） |
+
+---
+
+### 4. 主なコマンドラインオプション
 
 | オプション | デフォルト値 | 説明 |
 | :--- | :--- | :--- |
+| `--auto` | `False` | 自動問題選定モードを有効化（5段階難易度から未AC問題を自動選出） |
+| `--count-per-tier` | `1` | 自動モード時、各難易度階層から選定する問題数（デフォルト1＝計5問） |
+| `--include-kattis` | `False` | 自動モード時、CodeChefに加えてKattisからの補充を有効化 |
+| `--save-problems` | `problems.json` | 自動モード時、選定された問題セットを保存するパス |
 | `-p`, `--participants` | `participants.txt` | 参加者リストファイルのパス |
-| `-q`, `--problems` | `problems.json` | 候補問題JSONファイルのパス |
+| `-q`, `--problems` | `problems.json` | 候補問題JSONファイルのパス（手動モード用） |
 | `-d`, `--delay` | `1.2` | リクエスト間の基準待機秒数（ジッターが自動加算されます） |
 | `--max-candidates` | `25` | 参加者1人あたりに生成・探索する類似候補IDの最大数 |
 | `--output-json` | `result.json` | 結果JSONの出力先 |

@@ -49,11 +49,17 @@ class CodeChefScraper:
         )
         self.session.headers.update({
             "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
-            "Referer": "https://www.codechef.com/",
+            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"macOS"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "Referer": "https://www.codechef.com/",
         })
         self._user_cache: Dict[str, CodeChefUserResult] = {}
 
@@ -192,11 +198,22 @@ class CodeChefScraper:
     def _fetch_recent_ac_submissions(self, username: str, max_pages: int = 2) -> Set[str]:
         """Query CodeChef's recent user submissions endpoint to extract AC problem codes."""
         solved: Set[str] = set()
+        api_headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Referer": f"{self.BASE_URL}/users/{username.strip()}",
+        }
         for page in range(max_pages):
             api_url = f"{self.BASE_URL}/recent/user?page={page}&user_handle={username.strip()}"
             try:
-                resp = self._request_with_retry(api_url)
-                if resp is None or resp.status_code != 200:
+                self._sleep_with_jitter(multiplier=0.8)
+                resp = self.session.get(api_url, headers=api_headers, timeout=self.timeout)
+                if resp.status_code != 200:
+                    # If rate limited or unavailable, rely on profile HTML solves
+                    logger.debug(f"[CodeChef] recent/user returned {resp.status_code}, using profile HTML solves.")
                     break
                 data = resp.json()
                 html_content = data.get("content", "")

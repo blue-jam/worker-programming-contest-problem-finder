@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
-"""Main CLI script to check problem conflicts against Kattis and CodeChef.
+"""Main CLI script to check problem conflicts against CodeChef and Kattis.
+
+Supports both:
+1. Manual candidate list evaluation (via problems.json)
+2. Automatic problem candidate selection (--auto) across balanced AtCoder rating tiers (Brown to Red)
+   primarily using CodeChef with automatic Kattis fallback.
 
 Usage:
-    uv run python check_conflicts.py [--participants participants.txt] [--problems problems.json]
+    # Auto-find balanced problems across Brown to Red levels:
+    uv run python check_conflicts.py --auto
+
+    # Specify 2 problems per tier (total 10 problems):
+    uv run python check_conflicts.py --auto --count-per-tier 2
+
+    # Manual mode checking existing problems.json:
+    uv run python check_conflicts.py --problems problems.json
 """
 
 import argparse
@@ -11,7 +23,7 @@ import json
 import logging
 from pathlib import Path
 import sys
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -21,6 +33,7 @@ from src.fuzzy import CandidateUser, generate_candidate_ids
 from src.kattis import KattisScraper
 from src.codechef import CodeChefScraper
 from src.matcher import ProblemConflictResult, evaluate_problem_conflicts, RiskStatus
+from src.problem_fetcher import AutoProblemSelector, CandidateProblem, DEFAULT_TIERS, DifficultyTier
 from src.reporter import Reporter
 
 # Setup rich console
@@ -29,7 +42,7 @@ console = Console()
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check problem collisions on Kattis and CodeChef for contest problem selection.",
+        description="Check problem collisions on CodeChef and Kattis for contest problem selection.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -42,7 +55,29 @@ def parse_arguments() -> argparse.Namespace:
         "-q", "--problems",
         type=Path,
         default=Path("problems.json"),
-        help="Path to candidate problems JSON file.",
+        help="Path to candidate problems JSON file (used in manual mode).",
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Automatically search and select conflict-free candidate problems across balanced difficulty tiers.",
+    )
+    parser.add_argument(
+        "--count-per-tier",
+        type=int,
+        default=1,
+        help="In --auto mode: number of SAFE problems to find per difficulty tier (default: 1, total 5 problems).",
+    )
+    parser.add_argument(
+        "--include-kattis",
+        action="store_true",
+        help="In --auto mode: allow Kattis problems as supplement/fallback if CodeChef pool is insufficient.",
+    )
+    parser.add_argument(
+        "--save-problems",
+        type=Path,
+        default=Path("problems.json"),
+        help="In --auto mode: path to save the selected conflict-free problem set as JSON.",
     )
     parser.add_argument(
         "-d", "--delay",
@@ -100,8 +135,8 @@ def load_problems(path: Path) -> Dict[str, List[str]]:
     if not path.exists():
         console.print(f"[bold yellow]Warning:[/bold yellow] {path} not found. Using default sample problems.")
         return {
-            "kattis": ["bijele", "quadrant", "carrots", "cold", "non_existent_prob_xyz"],
-            "codechef": ["FLOW001", "TEST", "MAXHAMDIST", "ANTIPALQ", "NON_EXISTENT_PROB_999"],
+            "kattis": ["bijele", "quadrant", "carrots", "cold"],
+            "codechef": ["FLOW001", "TEST", "MAXHAMDIST", "ANTIPALQ"],
         }
 
     try:
@@ -130,17 +165,14 @@ def main():
 
     console.rule("[bold cyan]Programming Contest Problem Conflict Checker[/bold cyan]")
     console.print(f"Start time: [dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]")
+    if args.auto:
+        console.print("[bold green]Mode:[/bold green] Automatic Problem Finder across Balanced Tiers (茶色 〜 赤色)")
+    else:
+        console.print("[bold yellow]Mode:[/bold yellow] Manual Problem Evaluation (checking problems.json)")
 
-    # 1. Load inputs
+    # 1. Load participants
     participants = load_participants(args.participants)
-    problems_map = load_problems(args.problems)
-    kattis_problems = problems_map.get("kattis", [])
-    codechef_problems = problems_map.get("codechef", [])
-
     console.print(f"[bold green]Participants ({len(participants)}):[/bold green] {', '.join(participants)}")
-    console.print(f"[bold cyan]Kattis Problems ({len(kattis_problems)}):[/bold cyan] {', '.join(kattis_problems)}")
-    console.print(f"[bold cyan]CodeChef Problems ({len(codechef_problems)}):[/bold cyan] {', '.join(codechef_problems)}")
-    console.print()
 
     # 2. Generate Fuzzy Candidate User IDs
     all_candidates: List[CandidateUser] = []
@@ -168,12 +200,37 @@ def main():
     kattis_scraper = KattisScraper(base_delay=args.delay)
     codechef_scraper = CodeChefScraper(base_delay=args.delay)
 
-    kattis_user_solved: Dict[CandidateUser, Set[str]] = {}
     codechef_user_solved: Dict[CandidateUser, Set[str]] = {}
+    kattis_user_solved: Dict[CandidateUser, Set[str]] = {}
 
-    # 3. Scrape Kattis Users
-    if kattis_problems:
-        console.print("[bold cyan]Step 1/3: Checking accounts on Kattis...[/bold cyan]")
+    # 3. Check CodeChef Accounts (Primary Platform)
+    console.print("[bold cyan]Step 1/2: Checking participant accounts on CodeChef...[/bold cyan]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Checking CodeChef...", total=len(distinct_candidates))
+        for cand in distinct_candidates:
+            progress.update(task, description=f"CodeChef: Checking [bold]{cand.username}[/bold]")
+            res = codechef_scraper.fetch_user(cand.username)
+            if res.exists:
+                codechef_user_solved[cand] = set(res.solved_problems)
+            progress.advance(task)
+
+    # Check Kattis if manual problems list has Kattis problems or auto mode allows Kattis
+    should_check_kattis = False
+    if not args.auto:
+        manual_problems = load_problems(args.problems)
+        if manual_problems.get("kattis"):
+            should_check_kattis = True
+    elif args.include_kattis:
+        should_check_kattis = True
+
+    if should_check_kattis:
+        console.print("\n[bold cyan]Step 2/2: Checking participant accounts on Kattis...[/bold cyan]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -189,50 +246,102 @@ def main():
                     kattis_user_solved[cand] = set(res.solved_problems)
                 progress.advance(task)
 
-        # Dual-check: check problem statistics page for candidate problems to catch solves
-        if not args.skip_kattis_solvers_check:
-            console.print("[dim]Cross-referencing candidate problems against solver lists on Kattis...[/dim]")
-            for prob in kattis_problems:
-                solvers = kattis_scraper.fetch_problem_solvers(prob)
-                for cand in distinct_candidates:
-                    if cand.username.lower() in solvers:
-                        if cand not in kattis_user_solved:
-                            kattis_user_solved[cand] = set()
-                        kattis_user_solved[cand].add(prob.lower())
-
-    # 4. Scrape CodeChef Users
-    if codechef_problems:
-        console.print("\n[bold cyan]Step 2/3: Checking accounts on CodeChef...[/bold cyan]")
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Checking CodeChef...", total=len(distinct_candidates))
-            for cand in distinct_candidates:
-                progress.update(task, description=f"CodeChef: Checking [bold]{cand.username}[/bold]")
-                res = codechef_scraper.fetch_user(cand.username)
-                if res.exists:
-                    codechef_user_solved[cand] = set(res.solved_problems)
-                progress.advance(task)
-
-    # 5. Cross-reference conflicts
-    console.print("\n[bold cyan]Step 3/3: Evaluating conflict risk levels...[/bold cyan]")
     all_results: List[ProblemConflictResult] = []
 
-    # Evaluate Kattis
-    for prob in kattis_problems:
-        res = evaluate_problem_conflicts("Kattis", prob, kattis_user_solved)
-        all_results.append(res)
+    # 4. Problem Evaluation
+    if args.auto:
+        console.print("\n[bold cyan]Step 2/2: Finding SAFE balanced problems across difficulty tiers...[/bold cyan]")
+        selector = AutoProblemSelector(
+            tiers=DEFAULT_TIERS,
+            prefer_codechef=True,
+            use_kattis_fallback=args.include_kattis,
+        )
 
-    # Evaluate CodeChef
-    for prob in codechef_problems:
-        res = evaluate_problem_conflicts("CodeChef", prob, codechef_user_solved)
-        all_results.append(res)
+        selected_problems_for_export = {"codechef": [], "kattis": []}
+        tested_codes: Set[str] = set()
 
-    # 6. Report outputs
+        for tier in DEFAULT_TIERS:
+            console.print(f"\n[bold magenta]Searching {tier.name}[/bold magenta] ({tier.atcoder_target})...")
+            found_count = 0
+            attempts = 0
+            max_attempts = 40
+
+            while found_count < args.count_per_tier and attempts < max_attempts:
+                attempts += 1
+                cand_prob = selector.get_next_candidate(tier, excluded_codes=tested_codes)
+                if not cand_prob:
+                    console.print(f"  [yellow]No more candidate problems found in {tier.name} pool.[/yellow]")
+                    break
+
+                tested_codes.add(cand_prob.code.lower())
+
+                # Check conflict
+                if cand_prob.platform == "codechef":
+                    solved_map = codechef_user_solved
+                    diff_info = f"Rating {cand_prob.rating}" if cand_prob.rating else "-"
+                else:
+                    solved_map = kattis_user_solved
+                    diff_info = f"Diff {cand_prob.kattis_diff:.1f}" if cand_prob.kattis_diff else "-"
+
+                res = evaluate_problem_conflicts(
+                    platform=cand_prob.platform.capitalize(),
+                    problem_id=cand_prob.code,
+                    user_solved_map=solved_map,
+                    problem_name=cand_prob.name,
+                    tier=tier.tier,
+                    tier_name=tier.name,
+                    atcoder_target=tier.atcoder_target,
+                    difficulty_info=diff_info,
+                    url=cand_prob.url,
+                )
+
+                if res.status == RiskStatus.SAFE:
+                    all_results.append(res)
+                    found_count += 1
+                    selected_problems_for_export[cand_prob.platform].append(cand_prob.code)
+                    console.print(
+                        f"  [bold green]✓ SAFE:[/bold green] [{cand_prob.platform}] "
+                        f"[bold]{cand_prob.name}[/bold] (`{cand_prob.code}`, {diff_info}) "
+                        f"[dim]({found_count}/{args.count_per_tier})[/dim]"
+                    )
+                else:
+                    status_badge = "[red]COLLISION[/red]" if res.status == RiskStatus.COLLISION else "[yellow]SUSPICIOUS[/yellow]"
+                    console.print(
+                        f"  [dim]✗ {status_badge}: [{cand_prob.platform}] `{cand_prob.code}` "
+                        f"skipped ({res.details_string})[/dim]"
+                    )
+
+            if found_count < args.count_per_tier:
+                console.print(
+                    f"  [bold yellow]Notice:[/bold yellow] Found {found_count}/{args.count_per_tier} safe problems for {tier.name}."
+                )
+
+        # Save selected problems to JSON for future use
+        if args.save_problems:
+            args.save_problems.write_text(
+                json.dumps(selected_problems_for_export, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            console.print(f"\n[bold green]Saved auto-selected problem set to:[/bold green] {args.save_problems}")
+
+    else:
+        # Manual Mode
+        console.print("\n[bold cyan]Step 2/2: Evaluating conflict risk levels for provided problems...[/bold cyan]")
+        manual_problems = load_problems(args.problems)
+        kattis_problems = manual_problems.get("kattis", [])
+        codechef_problems = manual_problems.get("codechef", [])
+
+        # Evaluate Kattis
+        for prob in kattis_problems:
+            res = evaluate_problem_conflicts("Kattis", prob, kattis_user_solved)
+            all_results.append(res)
+
+        # Evaluate CodeChef
+        for prob in codechef_problems:
+            res = evaluate_problem_conflicts("CodeChef", prob, codechef_user_solved)
+            all_results.append(res)
+
+    # 5. Report outputs
     reporter = Reporter(console=console)
     reporter.print_console_summary(
         results=all_results,
@@ -246,8 +355,8 @@ def main():
         metadata={
             "participants": participants,
             "total_candidates": len(distinct_candidates),
-            "kattis_problems_count": len(kattis_problems),
-            "codechef_problems_count": len(codechef_problems),
+            "mode": "auto" if args.auto else "manual",
+            "tier_count": args.count_per_tier if args.auto else None,
         },
     )
     console.print(f"[bold green]Saved JSON output to:[/bold green] {args.output_json}")

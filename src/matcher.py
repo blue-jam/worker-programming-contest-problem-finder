@@ -32,6 +32,12 @@ class ProblemConflictResult:
     problem_id: str
     status: RiskStatus
     conflicts: List[ConflictDetail] = field(default_factory=list)
+    problem_name: str = ""
+    tier: Optional[int] = None
+    tier_name: str = ""
+    atcoder_target: str = ""
+    difficulty_info: str = ""
+    url: str = ""
 
     @property
     def details_string(self) -> str:
@@ -51,6 +57,12 @@ def evaluate_problem_conflicts(
     platform: str,
     problem_id: str,
     user_solved_map: Dict[CandidateUser, Set[str]],
+    problem_name: str = "",
+    tier: Optional[int] = None,
+    tier_name: str = "",
+    atcoder_target: str = "",
+    difficulty_info: str = "",
+    url: str = "",
 ) -> ProblemConflictResult:
     """Evaluate conflict risk for a specific problem given candidate users and their solved problems.
 
@@ -96,4 +108,10 @@ def evaluate_problem_conflicts(
         problem_id=problem_id,
         status=status,
         conflicts=conflicts,
+        problem_name=problem_name,
+        tier=tier,
+        tier_name=tier_name,
+        atcoder_target=atcoder_target,
+        difficulty_info=difficulty_info,
+        url=url,
     )

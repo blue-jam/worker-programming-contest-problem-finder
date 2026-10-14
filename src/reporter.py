@@ -1,6 +1,7 @@
 """Reporter module.
 
 Generates console summary (Rich), result.json, and report.md.
+Supports balanced difficulty tier display when available.
 """
 
 from datetime import datetime
@@ -24,17 +25,31 @@ class Reporter:
         total_candidates: int,
     ):
         """Print rich colored summary table to terminal."""
+        has_tiers = any(r.tier is not None for r in results)
+
         table = Table(title="[bold blue]Problem Conflict Cross-Check Summary[/bold blue]")
-        table.add_column("Platform", style="cyan", no_wrap=True)
-        table.add_column("Problem ID", style="bold white")
-        table.add_column("Status", justify="center")
-        table.add_column("Conflict Details / Users", style="dim")
+        if has_tiers:
+            table.add_column("Tier", style="magenta", no_wrap=True)
+            table.add_column("Target Level", style="cyan")
+            table.add_column("Platform", style="dim", no_wrap=True)
+            table.add_column("Problem", style="bold white")
+            table.add_column("Rating / Diff", justify="right", style="yellow")
+            table.add_column("Status", justify="center")
+            table.add_column("Conflict Details / Solvers", style="dim")
+        else:
+            table.add_column("Platform", style="cyan", no_wrap=True)
+            table.add_column("Problem ID", style="bold white")
+            table.add_column("Status", justify="center")
+            table.add_column("Conflict Details / Users", style="dim")
 
         safe_cnt = 0
         suspicious_cnt = 0
         collision_cnt = 0
 
-        for r in results:
+        # Sort by tier if present
+        sorted_results = sorted(results, key=lambda r: (r.tier or 99, r.platform, r.problem_id))
+
+        for r in sorted_results:
             if r.status == RiskStatus.SAFE:
                 status_str = "[bold green]SAFE[/bold green]"
                 safe_cnt += 1
@@ -45,12 +60,27 @@ class Reporter:
                 status_str = "[bold red on white]COLLISION[/bold red on white]"
                 collision_cnt += 1
 
-            table.add_row(
-                r.platform,
-                r.problem_id,
-                status_str,
-                r.details_string,
-            )
+            if has_tiers:
+                tier_str = f"Tier {r.tier}" if r.tier else "-"
+                target_str = r.atcoder_target or "-"
+                prob_title = f"{r.problem_name} ({r.problem_id})" if r.problem_name else r.problem_id
+                diff_str = r.difficulty_info or "-"
+                table.add_row(
+                    tier_str,
+                    target_str,
+                    r.platform,
+                    prob_title,
+                    diff_str,
+                    status_str,
+                    r.details_string,
+                )
+            else:
+                table.add_row(
+                    r.platform,
+                    r.problem_id,
+                    status_str,
+                    r.details_string,
+                )
 
         self.console.print()
         self.console.print(table)
@@ -85,6 +115,12 @@ class Reporter:
                 {
                     "platform": r.platform,
                     "problem_id": r.problem_id,
+                    "problem_name": r.problem_name,
+                    "tier": r.tier,
+                    "tier_name": r.tier_name,
+                    "atcoder_target": r.atcoder_target,
+                    "difficulty_info": r.difficulty_info,
+                    "url": r.url,
                     "status": r.status.value,
                     "details": r.details_string,
                     "conflicts": [
@@ -116,6 +152,7 @@ class Reporter:
         safe_cnt = sum(1 for r in results if r.status == RiskStatus.SAFE)
         suspicious_cnt = sum(1 for r in results if r.status == RiskStatus.SUSPICIOUS)
         collision_cnt = sum(1 for r in results if r.status == RiskStatus.COLLISION)
+        has_tiers = any(r.tier is not None for r in results)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -134,23 +171,52 @@ class Reporter:
             f"| 🟡 **SUSPICIOUS** | {suspicious_cnt} | 類似IDまたは関連アカウントによるAC履歴あり（要確認） |",
             f"| 🔴 **COLLISION** | {collision_cnt} | 参加者本人（完全一致ID）によるAC履歴あり（選定非推奨・衝突） |",
             "",
-            "## 2. 問題別 突合判定マトリクス",
-            "",
-            "| Platform | Problem ID | Status | Conflict Users / Details |",
-            "| :--- | :--- | :---: | :--- |",
         ]
 
-        for r in results:
-            if r.status == RiskStatus.SAFE:
-                badge = "🟢 `SAFE`"
-            elif r.status == RiskStatus.SUSPICIOUS:
-                badge = "🟡 `SUSPICIOUS`"
-            else:
-                badge = "🔴 **`COLLISION`**"
+        if has_tiers:
+            md_lines.extend([
+                "## 2. 難易度別（茶〜赤）問題選定 & 突合判定マトリクス",
+                "",
+                "チーム戦において実力差のあるメンバー全員が活躍できるよう、各難易度帯（AtCoder 茶色〜赤色）からバランスよく構成されています。",
+                "",
+                "| 難易度階層 | 想定レベル | プラットフォーム | 問題コード / 問題名 | 難易度指標 | 判定 | 衝突詳細 / アカウント |",
+                "| :--- | :--- | :--- | :--- | :---: | :---: | :--- |",
+            ])
+            sorted_results = sorted(results, key=lambda r: (r.tier or 99, r.platform, r.problem_id))
+            for r in sorted_results:
+                if r.status == RiskStatus.SAFE:
+                    badge = "🟢 `SAFE`"
+                elif r.status == RiskStatus.SUSPICIOUS:
+                    badge = "🟡 `SUSPICIOUS`"
+                else:
+                    badge = "🔴 **`COLLISION`**"
 
-            md_lines.append(
-                f"| {r.platform} | `{r.problem_id}` | {badge} | {r.details_string} |"
-            )
+                tier_name = r.tier_name or f"Tier {r.tier}"
+                target = r.atcoder_target or "-"
+                prob_link = f"[{r.problem_name or r.problem_id}]({r.url})" if r.url else f"`{r.problem_id}`"
+                diff_info = r.difficulty_info or "-"
+
+                md_lines.append(
+                    f"| {tier_name} | {target} | {r.platform} | {prob_link} (`{r.problem_id}`) | {diff_info} | {badge} | {r.details_string} |"
+                )
+        else:
+            md_lines.extend([
+                "## 2. 問題別 突合判定マトリクス",
+                "",
+                "| Platform | Problem ID | Status | Conflict Users / Details |",
+                "| :--- | :--- | :---: | :--- |",
+            ])
+            for r in results:
+                if r.status == RiskStatus.SAFE:
+                    badge = "🟢 `SAFE`"
+                elif r.status == RiskStatus.SUSPICIOUS:
+                    badge = "🟡 `SUSPICIOUS`"
+                else:
+                    badge = "🔴 **`COLLISION`**"
+
+                md_lines.append(
+                    f"| {r.platform} | `{r.problem_id}` | {badge} | {r.details_string} |"
+                )
 
         md_lines.extend([
             "",
