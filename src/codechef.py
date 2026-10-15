@@ -9,6 +9,7 @@ import logging
 import random
 import re
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 from bs4 import BeautifulSoup
 import requests
@@ -62,6 +63,22 @@ class CodeChefScraper:
             "Referer": "https://www.codechef.com/",
         })
         self._user_cache: Dict[str, CodeChefUserResult] = {}
+        # Preload from local disk cache if available
+        cache_path = Path("cache_solved.json")
+        if cache_path.exists():
+            try:
+                import json
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                for k, v in cached.items():
+                    if v.get("checked"):
+                        self._user_cache[k.lower()] = CodeChefUserResult(
+                            username=v.get("handle", k),
+                            exists=v.get("exists", False),
+                            solved_problems=set(v.get("solved", [])),
+                            profile_url=f"https://www.codechef.com/users/{v.get('handle', k)}",
+                        )
+            except Exception as e:
+                logger.debug(f"Failed to preload cache_solved.json: {e}")
 
     def _sleep_with_jitter(self, multiplier: float = 1.0):
         """Sleep to respect rate limits and prevent bans."""
@@ -89,7 +106,7 @@ class CodeChefScraper:
                 time.sleep(2.0)
         return None
 
-    def fetch_user(self, username: str) -> CodeChefUserResult:
+    def fetch_user(self, username: str, include_recent_api: bool = False) -> CodeChefUserResult:
         """Fetch user profile and extract solved problems from CodeChef."""
         lower_user = username.strip().lower()
         if lower_user in self._user_cache:
@@ -143,9 +160,10 @@ class CodeChefScraper:
             soup = BeautifulSoup(resp.text, "html.parser")
             solved = self._parse_solved_problems(soup)
 
-            # 2. Also check recent submission activity API for accurate Problem Codes
-            recent_solved = self._fetch_recent_ac_submissions(username)
-            solved.update(recent_solved)
+            # 2. Check recent submission activity API only if explicitly requested
+            if include_recent_api:
+                recent_solved = self._fetch_recent_ac_submissions(username)
+                solved.update(recent_solved)
 
             result = CodeChefUserResult(
                 username=username,

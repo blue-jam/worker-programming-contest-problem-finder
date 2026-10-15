@@ -228,5 +228,4 @@ teams.csv
 
 # Output deliverables (実行成果物)
 report.md
-result.json
-
+*.json
